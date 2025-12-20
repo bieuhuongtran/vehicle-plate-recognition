@@ -37,7 +37,7 @@ Công nghệ sử dụng
 
 ## 3/Giao diện Web (Frontend)
 
-Web tĩnh viết bằng HTML
+1.Web tĩnh viết bằng HTML
 
 Chức năng:
 
