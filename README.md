@@ -46,3 +46,15 @@ Chức năng:
 + Hiển thị kết quả nhận diện
 
 + Đóng vai trò minh họa và kiểm thử hệ thống
+
+# Hướng dẫn triển khai
+
+Khởi động server:
+```sh
+make run
+```
+
+Test (ở một terminal khác):
+```sh
+make test
+```
