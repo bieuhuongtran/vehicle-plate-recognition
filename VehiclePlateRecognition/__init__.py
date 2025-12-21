@@ -1,4 +1,4 @@
-def recognizeLicensePlate():
+def recognizeLicensePlate(imgBuffer):
     """Creates and returns a dictionary with person details."""
     result = []
 
