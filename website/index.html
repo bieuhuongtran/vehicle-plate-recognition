@@ -14,14 +14,11 @@
     </div>
 
     <div>
-        <form method="post">
-            <div>
-                Input ing:
-                <input type="file" id="inputimg" name="img" accept="image/jpeg" />
-            </div>
-            <div>
-                <button type="submit">Submit Form</button>
-            </div>
+        <form action="/" method="POST" enctype="multipart/form-data">
+            <label>Select a file:</label>
+            <input type="file" name="file"><br><br>
+
+            <input type="submit" value="Submit Form">
         </form>
     </div>
 
