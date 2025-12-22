@@ -38,7 +38,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
             # Read the content length and the POST data from the request body
             imgBuffer = fields['file'][0]
-            result = VehiclePlateRecognition.recognizeLicensePlate(imgBuffer)
+            result = VehiclePlateRecognition.recognizeLicensePlateBuffer(imgBuffer)
 
             # Send the response back to the client
             self.send_response(200)

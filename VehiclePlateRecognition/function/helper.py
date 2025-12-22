@@ -1,86 +1,64 @@
-import cv2
-import numpy as np
 import math
 
-# ===================== BINARY =====================
-def binarize_for_contours(channel):
-    blur = cv2.GaussianBlur(channel, (5,5), 0)
-    _, th = cv2.threshold(blur, 0, 255,
-                          cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    th = cv2.morphologyEx(
-        th, cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_RECT,(3,3)),
-        iterations=1
-    )
-    return th
+# license plate type classification helper function
+def linear_equation(x1, y1, x2, y2):
+    b = y1 - (y2 - y1) * x1 / (x2 - x1)
+    a = (y1 - b) / x1
+    return a, b
 
-# ===================== CONTOURS → QUADS =====================
-def approx_quads_from_contours(contours, min_perimeter=50):
-    quads = []
-    for cnt in contours:
-        peri = cv2.arcLength(cnt, True)
-        if peri < min_perimeter:
-            continue
-        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
-        if len(approx) == 4:
-            quads.append(approx.reshape(4,2).astype(np.float32))
-    return quads
+def check_point_linear(x, y, x1, y1, x2, y2):
+    a, b = linear_equation(x1, y1, x2, y2)
+    y_pred = a*x+b
+    return(math.isclose(y_pred, y, abs_tol = 3))
 
-# ===================== ORDER TL–TR–BR–BL =====================
-def order_quad_points(pts4):
-    pts = np.array(pts4, dtype=np.float32).reshape(-1,2)
-    s = pts.sum(axis=1)
-    diff = np.diff(pts, axis=1).ravel()
+# detect character and number in license plate
+def read_plate(yolo_license_plate, im):
+    LP_type = "1"
+    results = yolo_license_plate(im)
+    bb_list = results.pandas().xyxy[0].values.tolist()
+    if len(bb_list) == 0 or len(bb_list) < 7 or len(bb_list) > 10:
+        return None
+    center_list = []
+    y_mean = 0
+    y_sum = 0
+    for bb in bb_list:
+        x_c = (bb[0]+bb[2])/2
+        y_c = (bb[1]+bb[3])/2
+        y_sum += y_c
+        center_list.append([x_c,y_c,bb[-1]])
 
-    tl = pts[np.argmin(s)]
-    br = pts[np.argmax(s)]
-    tr = pts[np.argmin(diff)]
-    bl = pts[np.argmax(diff)]
+    # find 2 point to draw line
+    l_point = center_list[0]
+    r_point = center_list[0]
+    for cp in center_list:
+        if cp[0] < l_point[0]:
+            l_point = cp
+        if cp[0] > r_point[0]:
+            r_point = cp
+    for ct in center_list:
+        if l_point[0] != r_point[0]:
+            if (check_point_linear(ct[0], ct[1], l_point[0], l_point[1], r_point[0], r_point[1]) == False):
+                LP_type = "2"
 
-    return np.array([tl, tr, br, bl], dtype=np.float32)
+    y_mean = int(int(y_sum) / len(bb_list))
+    size = results.pandas().s
 
-# ===================== SCORE CHỌN BIỂN =====================
-def score_plate_quad(quad, img_area):
-    x, y, w, h = cv2.boundingRect(quad.astype(np.int32))
-    if w == 0 or h == 0:
-        return -1
-    aspect = w / float(h)
-    area = w * h
-    area_frac = area / float(img_area)
-
-    # Ràng buộc hợp lý
-    if not (1.0 <= aspect <= 7.0):
-        return -1
-    if not (0.001 <= area_frac <= 0.40):
-        return -1
-
-    score = area * (1.0 - abs(aspect - 2.5)/4.0)
-    return score
-
-# ===================== CHỌN 4-POINT WARP =====================
-def four_point_transform(image, quad, force_width=None, force_ar=None):
-    rect = order_quad_points(quad)
-    (tl, tr, br, bl) = rect
-
-    widthA  = np.linalg.norm(br - bl)
-    widthB  = np.linalg.norm(tr - tl)
-    heightA = np.linalg.norm(tr - br)
-    heightB = np.linalg.norm(tl - bl)
-
-    W = int(max(widthA, widthB))
-    H = int(max(heightA, heightB))
-
-    if force_width is not None:
-        W = int(force_width)
-    if force_ar is not None and force_ar > 0:
-        H = max(1, int(W / float(force_ar)))
-
-    W = max(W, 1); H = max(H, 1)
-
-    dst = np.array([
-        [0,0], [W-1,0], [W-1,H-1], [0,H-1]
-    ], dtype=np.float32)
-
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (W, H))
-    return warped
+    # 1 line plates and 2 line plates
+    line_1 = []
+    line_2 = []
+    license_plate = ""
+    if LP_type == "2":
+        for c in center_list:
+            if int(c[1]) > y_mean:
+                line_2.append(c)
+            else:
+                line_1.append(c)
+        for l1 in sorted(line_1, key = lambda x: x[0]):
+            license_plate += str(l1[2])
+        license_plate += "-"
+        for l2 in sorted(line_2, key = lambda x: x[0]):
+            license_plate += str(l2[2])
+    else:
+        for l in sorted(center_list, key = lambda x: x[0]):
+            license_plate += str(l[2])
+    return license_plate
