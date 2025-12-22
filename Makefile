@@ -5,7 +5,7 @@ init:
 	sudo apt install -y python3.12-venv
 	python -m venv vpr-env
 	source ./vpr-env/bin/activate ; \
-	pip install -r ./VehiclePlateRecognition/yolov5/requirements.txt ; \
+	pip install -r ./VehiclePlateRecognition/model/yolov5/requirements.txt ; \
 	pip install -r requirements.txt
 
 run:
