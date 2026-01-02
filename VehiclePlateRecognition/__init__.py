@@ -1,3 +1,12 @@
+"""
+Tiện ích phát hiện và chuẩn hóa biển số.
+
+Module này chứa các hàm để:
+ - phát hiện vùng biển số (dùng YOLO),
+ - chuẩn hóa crop biển về dạng nằm ngang phù hợp cho OCR,
+ - thực hiện OCR đọc ký tự trên biển.
+"""
+
 import cv2
 import numpy as np
 from io import BytesIO
@@ -75,7 +84,7 @@ def score_plate_quad(quad, img_area):
     return score
 
 
-# === NEW: 4-Point perspective warp ===
+# === MỚI: Phép warp phối cảnh 4-điểm ===
 def four_point_transform(image, quad, force_width=None, force_ar=None):
     """
     quad: 4x2 (tl, tr, br, bl)
@@ -111,17 +120,17 @@ def normalizePlate(image):
     quads = []
     blue, green, red = cv2.split(image)
 
-    # Red
+    # Kênh đỏ
     th_r = binarize_for_contours(red)
     contours_r, _ = cv2.findContours(th_r, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
     quads += approx_quads_from_contours(contours_r)
 
-    # Green
+    # Kênh xanh lá
     th_g = binarize_for_contours(green)
     contours_g, _ = cv2.findContours(th_g, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
     quads += approx_quads_from_contours(contours_g)
 
-    # Blue
+    # Kênh xanh dương
     th_b = binarize_for_contours(blue)
     contours_b, _ = cv2.findContours(th_b, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
     quads += approx_quads_from_contours(contours_b)
@@ -171,8 +180,12 @@ def normalizePlate(image):
 
     return warped
 
-# ===================== ocrPlate ====================================================================================================================================================================================================================================
+# ===================== OCR biển số ====================================================================================================================================================================================================================================
 def recognizeLicensePlate(imgNumpy):
+    """Phát hiện biển trên ảnh numpy RGB và trả về danh sách kết quả OCR (list các dict).
+
+    Mỗi dict có: x, y, w, h, text
+    """
     out = []
 
     list_plates = yolo_LP_detect(imgNumpy, size=640).pandas().xyxy[0].values.tolist()
@@ -180,12 +193,14 @@ def recognizeLicensePlate(imgNumpy):
     for plate in list_plates:
         count = count + 1
         flag = 0
-        x = int(plate[0])  # xmin
-        y = int(plate[1])  # ymin
-        w = int(plate[2] - plate[0])  # xmax - xmin
-        h = int(plate[3] - plate[1])  # ymax - ymin
+        x = int(plate[0])  # xmin (tọa độ x nhỏ nhất)
+        y = int(plate[1])  # ymin (tọa độ y nhỏ nhất)
+        w = int(plate[2] - plate[0])  # xmax - xmin (chiều rộng)
+        h = int(plate[3] - plate[1])  # ymax - ymin (chiều cao)
+        # Thêm đệm 10px quanh crop để tránh cắt ký tự ở rìa
         crop_img = imgNumpy[y - 10 : y + h + 10, x - 10 : x + w + 10]
         lp = ""
+        # Thử một lưới nhỏ các tham số deskew (2x2) để xử lý xoay nhẹ; dừng sớm khi có kết quả
         for cc in range(0, 2):
             for ct in range(0, 2):
                 dPlate = utils_rotate.deskew(crop_img, cc, ct)
@@ -210,6 +225,11 @@ def recognizeLicensePlate(imgNumpy):
 
 
 def recognizeLicensePlateBuffer(source):
+    """Hàm bọc nhận buffer ảnh (bytes), chuyển sang numpy RGB và gọi
+    `recognizeLicensePlate`.
+
+    Trả về danh sách dict kết quả giống `recognizeLicensePlate`.
+    """
     if len(source) == 0:
         return []
 
