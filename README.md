@@ -49,12 +49,28 @@ Chức năng:
 
 # Hướng dẫn triển khai
 
+Cài đật:
+```sh
+make init
+```
+
 Khởi động server:
 ```sh
 make run
 ```
 
-Test (ở một terminal khác):
+Truy cập giao diện: http://0.0.0.0:8080
+
+Test gửi ảnh lên server (ở một terminal khác):
 ```sh
-make test
+make test-post
+```
+
+Test xử lý hình ảnh không qua server:
+```sh
+make test-1
+```
+
+```sh
+make test-oop
 ```
