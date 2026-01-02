@@ -11,5 +11,11 @@ init:
 run:
 	source ./vpr-env/bin/activate ; python .
 
-test:
-	curl -d "name=admin&shoesize=12" http://0.0.0.0:8080
+test-post:
+	curl -F "file=@./test/image.png" http://0.0.0.0:8080
+
+test-1:
+	source ./vpr-env/bin/activate ; python ./test/test1.py
+
+test-oop:
+	source ./vpr-env/bin/activate ; python ./test/test-oop.py
