@@ -70,57 +70,6 @@ def generate_plate_text(fmt: str = "LLL-DDDD") -> str:
             out.append(c)
     return "".join(out)
 
-
-def render_plate_image(
-    text: str,
-    size: Tuple[int, int] = (320, 96),
-    font_path: Optional[str] = None,
-    font_size: Optional[int] = None,
-    bgcolor: Tuple[int, int, int] = (255, 255, 255),
-    fg: Tuple[int, int, int] = (0, 0, 0),
-    border: bool = True,
-    noise: bool = False,
-) -> Image.Image:
-    """Render a simple rectangular image containing `text` (plate-like look).
-
-    The function uses PIL. If `font_path` is not provided, the default PIL font
-    is used. This is intended for synthetic data / testing only.
-    """
-    w, h = size
-    img = Image.new("RGB", (w, h), color=bgcolor)
-    draw = ImageDraw.Draw(img)
-
-    # Choose font size heuristically if not provided
-    if font_size is None:
-        font_size = int(h * 0.5)
-
-    try:
-        font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
-    except Exception:
-        font = ImageFont.load_default()
-
-    # Measure text and center it
-    tw, th = draw.textsize(text, font=font)
-    x = (w - tw) // 2
-    y = (h - th) // 2
-
-    # Draw a subtle border to emulate plate frame
-    if border:
-        pad = int(h * 0.06)
-        draw.rectangle((pad, pad, w - pad - 1, h - pad - 1), outline=fg)
-
-    draw.text((x, y), text, font=font, fill=fg)
-
-    if noise:
-        arr = np.array(img).astype(np.int16)
-        noise_level = int(4 + random.random() * 8)
-        arr += np.random.randint(-noise_level, noise_level, size=arr.shape)
-        arr = np.clip(arr, 0, 255).astype(np.uint8)
-        img = Image.fromarray(arr)
-
-    return img
-
-
 def _clamp_bbox(bbox: Tuple[int, int, int, int], width: int, height: int) -> Tuple[int, int, int, int]:
     x1, y1, x2, y2 = bbox
     x1 = max(0, min(width - 1, x1))
