@@ -1,238 +1,126 @@
-"""
-Tiện ích phát hiện và chuẩn hóa biển số.
-
-Module này chứa các hàm để:
- - phát hiện vùng biển số (dùng YOLO),
- - chuẩn hóa crop biển về dạng nằm ngang phù hợp cho OCR,
- - thực hiện OCR đọc ký tự trên biển.
-"""
-
+import math
 import cv2
 import numpy as np
 from io import BytesIO
-import math
 from PIL import Image
-from .model.yolo import yolo_LP_detect, yolo_license_plate
-from .function import helper
-from .function import utils_rotate as utils_rotate
-
-import os
-
-current_directory = os.path.dirname(__file__)
-cropImgPath = f"{current_directory}/../test/crop.jpg"
-frameImgPath = f"{current_directory}/../test/frame.jpg"
-cropRedChannelPath = f"{current_directory}/../test/crop-red.jpg"
-cropGreenChannelPath = f"{current_directory}/../test/crop-green.jpg"
-cropBlueChannelPath = f"{current_directory}/../test/crop-blue.jpg"
-cropCandidatePath = f"{current_directory}/../test/crop-candidate.jpg"
-
-cropPlatePath = f"{current_directory}/../test/plate_cropped.jpg"
-cropPlatePerspectivePath = f"{current_directory}/../test/plate_rotated_perspective.jpg"
+from .model.yolo import yolo_LP_detect
+from .rotate import deskew_plate
+from .normalize import normalize_plate
+from .ocr import ocr_plate
 
 
-def binarize_for_contours(channel):
-    """Nhị phân hoá 1 kênh (8-bit) để dùng cho findContours."""
-    blur = cv2.GaussianBlur(channel, (5, 5), 0)
-    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    th = cv2.morphologyEx(
-        th,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
-        iterations=1,
-    )
-    return th
+class Plate:
+    def __init__(self, img, x1, y1, x2, y2):
+        self._text = None
 
+        self.img = img
+        self.x1 = x1
+        self.y1 = y1
+        self.x2 = x2
+        self.y2 = y2
 
-def approx_quads_from_contours(contours):
-    """Trả về danh sách tứ giác (4x2) xấp xỉ từ contours."""
-    quads = []
-    for cnt in contours:
-        peri = cv2.arcLength(cnt, True)
-        if peri < 50:
-            continue
-        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
-        if len(approx) == 4:
-            quads.append(approx.reshape(4, 2).astype(np.float32))
-    return quads
+    def save_img(self, outputPath):
+        Image.fromarray(self.img, "RGB").save(outputPath)
 
+    @property
+    def w(self):
+        return self.x2 - self.x1
 
-def order_quad_points(pts4):
-    """Sắp xếp 4 điểm: tl, tr, br, bl."""
-    pts = np.array(pts4, dtype=np.float32).reshape(-1, 2)
-    s = pts.sum(axis=1)
-    diff = np.diff(pts, axis=1).ravel()
-    tl = pts[np.argmin(s)]
-    br = pts[np.argmax(s)]
-    tr = pts[np.argmin(diff)]
-    bl = pts[np.argmax(diff)]
-    return np.array([tl, tr, br, bl], dtype=np.float32)
+    @property
+    def h(self):
+        return self.y2 - self.y1
 
-
-def score_plate_quad(quad, img_area):
-    """Chấm điểm theo diện tích bbox và tỉ lệ w/h hợp lý."""
-    x, y, w, h = cv2.boundingRect(quad.astype(np.int32))
-    if w == 0 or h == 0:
-        return -1
-    aspect = w / float(h)
-    area = w * h
-    area_frac = area / float(img_area)
-    if not (1.0 <= aspect <= 7.0):
-        return -1
-    if not (0.001 <= area_frac <= 0.40):
-        return -1
-    score = area * (1.0 - abs(aspect - 2.5) / 4.0)
-    return score
-
-
-# === MỚI: Phép warp phối cảnh 4-điểm ===
-def four_point_transform(image, quad, force_width=None, force_ar=None):
-    """
-    quad: 4x2 (tl, tr, br, bl)
-    force_width: nếu muốn ép chiều rộng đầu ra (px)
-    force_ar: nếu muốn ép tỉ lệ W/H (ví dụ 4.0 cho biển ngang)
-    """
-    rect = order_quad_points(quad)
-    (tl, tr, br, bl) = rect
-
-    widthA = np.linalg.norm(br - bl)
-    widthB = np.linalg.norm(tr - tl)
-    heightA = np.linalg.norm(tr - br)
-    heightB = np.linalg.norm(tl - bl)
-
-    W = int(max(widthA, widthB))
-    H = int(max(heightA, heightB))
-    if force_width is not None:
-        W = int(force_width)
-    if force_ar is not None and force_ar > 0:
-        H = max(1, int(W / float(force_ar)))
-
-    W = max(W, 1)
-    H = max(H, 1)
-    dst = np.array([[0, 0], [W - 1, 0], [W - 1, H - 1], [0, H - 1]], dtype=np.float32)
-    M = cv2.getPerspectiveTransform(rect, dst)
-    return cv2.warpPerspective(image, M, (W, H))
-
-
-def normalizePlate(image):
-    h, w = image.shape[:2]
-    img_area = w * h
-
-    quads = []
-    blue, green, red = cv2.split(image)
-
-    # Kênh đỏ
-    th_r = binarize_for_contours(red)
-    contours_r, _ = cv2.findContours(th_r, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
-    quads += approx_quads_from_contours(contours_r)
-
-    # Kênh xanh lá
-    th_g = binarize_for_contours(green)
-    contours_g, _ = cv2.findContours(th_g, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
-    quads += approx_quads_from_contours(contours_g)
-
-    # Kênh xanh dương
-    th_b = binarize_for_contours(blue)
-    contours_b, _ = cv2.findContours(th_b, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
-    quads += approx_quads_from_contours(contours_b)
-
-    best_quad = None
-    best_score = -1
-    for q in quads:
-        q_ord = order_quad_points(q)
-        sc = score_plate_quad(q_ord, img_area)
-        if sc > best_score:
-            best_score = sc
-            best_quad = q_ord
-
-    # Fallback: nếu không có tứ giác 4 đỉnh, dùng minAreaRect từ kênh “tốt nhất” theo tổng diện tích
-    if best_quad is None:
-        candidates = sorted(
-            [("b", contours_b), ("g", contours_g), ("r", contours_r)],
-            key=lambda x: sum(cv2.contourArea(c) for c in x[1]),
-            reverse=True,
-        )
-        cnts = candidates[0][1] if candidates else contours_b
-        if not cnts:
-            # raise RuntimeError("Không tìm thấy contour nào đủ lớn.")
-            return None
-        cnt = max(cnts, key=cv2.contourArea)
-        rect = cv2.minAreaRect(cnt)
-        box = cv2.boxPoints(rect).astype(np.float32)
-        best_quad = order_quad_points(box)
-
-    # Vẽ tứ giác chọn được
-    # dbg = image.copy()
-    # cv2.polylines(dbg, [best_quad.astype(np.int32)], True, (0, 255, 0), 2, lineType=cv2.LINE_AA)
-    # cv2.imwrite(cropCandidatePath, dbg)
-
-    # ===================== 4) 4-POINT WARP + XOAY CHUẨN =====================
-    # Trải phẳng trực tiếp từ ảnh gốc bằng 4 điểm
-    # (bạn có thể ép kích thước/AR nếu cần: force_width=700, force_ar=4.0)
-    # 190/140 tỷ lệ tiêu chuẩn cho xe máy
-
-    warped = four_point_transform(
-        image, best_quad, force_width=None, force_ar=190 / 140
-    )
-
-    # Nếu sau warp vẫn dọc > ngang thì xoay 90° cho dễ đọc
-    if warped.shape[0] > warped.shape[1]:
-        warped = cv2.rotate(warped, cv2.ROTATE_90_CLOCKWISE)
-
-    return warped
-
-# ===================== OCR biển số ====================================================================================================================================================================================================================================
-def recognizeLicensePlate(imgNumpy):
-    """Phát hiện biển trên ảnh numpy RGB và trả về danh sách kết quả OCR (list các dict).
-
-    Mỗi dict có: x, y, w, h, text
-    """
-    out = []
-
-    list_plates = yolo_LP_detect(imgNumpy, size=640).pandas().xyxy[0].values.tolist()
-    count = 0
-    for plate in list_plates:
-        count = count + 1
-        flag = 0
-        x = int(plate[0])  # xmin (tọa độ x nhỏ nhất)
-        y = int(plate[1])  # ymin (tọa độ y nhỏ nhất)
-        w = int(plate[2] - plate[0])  # xmax - xmin (chiều rộng)
-        h = int(plate[3] - plate[1])  # ymax - ymin (chiều cao)
-        # Thêm đệm 10px quanh crop để tránh cắt ký tự ở rìa
-        crop_img = imgNumpy[y - 10 : y + h + 10, x - 10 : x + w + 10]
-        lp = ""
-        # Thử một lưới nhỏ các tham số deskew (2x2) để xử lý xoay nhẹ; dừng sớm khi có kết quả
+    def ocr(self):
+        crop_img = self.img
+        lp = None
         for cc in range(0, 2):
             for ct in range(0, 2):
-                dPlate = utils_rotate.deskew(crop_img, cc, ct)
-                nPlate = normalizePlate(dPlate)
-                lp = helper.read_plate(yolo_license_plate, nPlate)
+                dPlate = deskew_plate(crop_img, cc, ct)
+                nPlate = normalize_plate(dPlate)
+                lp = ocr_plate(nPlate)
                 if lp:
-                    out.append(
-                        {
-                            "x": x,
-                            "y": y,
-                            "w": w,
-                            "h": h,
-                            "text": lp,
-                        }
-                    )
+                    return lp
+        return None
 
-                    flag = 1
-                    break
-            if flag == 1:
-                break
-    return out
+    @property
+    def text(self):
+        if not self._text:
+            self._text = self.ocr()
+        return self._text
+
+    def __repr__(self):
+        return f"Plate (x1:{self.x1}, y1:{self.y1}, x2:{self.x2}, y2:{self.y2})"
+
+    def predict(self):
+        return {
+            "x": self.x1,
+            "y": self.y1,
+            "w": self.w,
+            "h": self.h,
+            "text": self.text,
+        }
+
+
+class Instance:
+    def __init__(self, source):
+        self._plates = None
+
+        self.source = source
+        pil = Image.open(BytesIO(source)).convert("RGB")
+        self.img = np.array(pil, dtype=np.uint8)
+
+    def detect_plates(self):
+        plates = []
+        for result in (yolo_LP_detect(self.img, size=640).pandas().xyxy[0].values.tolist()):
+            x1, y1, x2, y2, *_ = result
+            plates.append(Plate(
+                self.img[int(y1 - 10) : int(y2 + 10), int(x1 - 10) : int(x2 + 10)],# crop plate from source image
+                x1, y1, x2, y2,
+            ))
+        return plates
+
+    @property
+    def plates(self) -> list[Plate]:
+        if not self._plates:
+            self._plates = self.detect_plates()
+        return self._plates
+
+    def save_image(self, outputPath):
+        dbgImg = self.img.copy()
+        for plate in self.plates:
+            cv2.rectangle(
+                dbgImg,
+                (math.floor(plate.x1), math.floor(plate.y1 - 1)),
+                (math.ceil(plate.x2 + 1), math.ceil(plate.y2 + 1)),
+                (255, 0, 0),
+                4,
+            )
+        cv2.imwrite(outputPath, dbgImg)
+
+    def save_plates_image(self, outputPathPrefix):
+        id = 0
+        for plate in self.plates:
+            id = id + 1
+            plate.save_img(outputPathPrefix + "-plate-" + str(id) + ".png")
+
+    def predict(self):
+        results = []
+        for plate in self.plates:
+            plateResult = plate.predict()
+            if plateResult["text"]:
+                results.append(plateResult)
+        return results
+
+    @staticmethod
+    def process_img_buffer(source):
+        obj = Instance(source)
+        return obj.predict()
+
+    @staticmethod
+    def from_file(input_file):
+        with open(input_file, "rb") as file:
+            return Instance(file.read())
 
 
 def recognizeLicensePlateBuffer(source):
-    """Hàm bọc nhận buffer ảnh (bytes), chuyển sang numpy RGB và gọi
-    `recognizeLicensePlate`.
-
-    Trả về danh sách dict kết quả giống `recognizeLicensePlate`.
-    """
-    if len(source) == 0:
-        return []
-
-    pil = Image.open(BytesIO(source)).convert("RGB")
-    rgb = np.array(pil, dtype=np.uint8)
-    return recognizeLicensePlate(rgb)
+    return Instance.process_img_buffer(source)
